@@ -1,8 +1,8 @@
 import socket
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import os
-
 from crypto_utils import (
     CHUNK_SIZE, encrypt_data, decrypt_data,
     chunk_bytes, merkle_root
@@ -10,6 +10,8 @@ from crypto_utils import (
 
 HOST = "192.168.56.1"
 PORT = 4455
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "Downloaded")
 
 
 def recvall(sock: socket.socket, n: int) -> bytes:
@@ -38,7 +40,7 @@ def upload_file():
 
         with socket.socket() as client:
             client.connect((HOST, PORT))
-            client.sendall(b"UPLOAD")
+            client.sendall(b"UPLOAD".ljust(10, b" "))
 
             # filename
             name_b = filename.encode("utf-8")
@@ -76,7 +78,8 @@ def download_file():
     try:
         with socket.socket() as client:
             client.connect((HOST, PORT))
-            client.sendall(b"DOWNLOAD")
+            client.sendall(b"DOWNLOAD".ljust(10, b" "))
+
 
             name_b = filename.encode("utf-8")
             client.sendall(len(name_b).to_bytes(4, "big"))
@@ -91,18 +94,18 @@ def download_file():
             enc_len = int.from_bytes(recvall(client, 8), "big")
             encrypted = recvall(client, enc_len)
 
-            root_hash = recvall(client, 64).decode("ascii").strip()
+            root_hash = recvall(client, 64).decode("ascii")
 
         content = decrypt_data(encrypted)
-        chunks = chunk_bytes(content)
+        chunks = chunk_bytes(encrypted)
         computed = merkle_root(chunks)
-
+        
         if computed != root_hash:
             messagebox.showerror("Error", "Integrity check failed after download")
             return
 
-        os.makedirs("Downloaded", exist_ok=True)
-        out_path = os.path.join("Downloaded", filename)
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        out_path = os.path.join(DOWNLOAD_DIR, filename)
 
         with open(out_path, "wb") as f:
             f.write(content)
