@@ -1,0 +1,3 @@
+Date,Timestamp,Client Address,Event,Filename,Status
+2026-02-07,02:42:37.906302,192.168.56.1:49153,New connection,-,-
+2026-02-07,02:42:53.728999,192.168.56.1:50453,New connection,-,-
