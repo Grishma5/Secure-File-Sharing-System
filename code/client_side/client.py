@@ -1,27 +1,18 @@
+# client.py
 import socket
-import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import os
-from crypto_utils import (
-    CHUNK_SIZE, encrypt_data, decrypt_data,
-    chunk_bytes, merkle_root
-)
+
+from crypto_utils import encrypt_data, decrypt_data, compute_hash
 
 HOST = "192.168.56.1"
 PORT = 4455
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DOWNLOAD_DIR = os.path.join(BASE_DIR, "Downloaded")
 
 
-def recvall(sock: socket.socket, n: int) -> bytes:
-    data = b""
-    while len(data) < n:
-        packet = sock.recv(n - len(data))
-        if not packet:
-            raise RuntimeError("Socket closed prematurely")
-        data += packet
-    return data
+def update_status(msg):
+    status_box.insert(tk.END, msg + "\n")
+    status_box.see(tk.END)
 
 
 def upload_file():
@@ -31,107 +22,150 @@ def upload_file():
 
     try:
         with open(path, "rb") as f:
-            content = f.read()
+            data = f.read()
 
         filename = os.path.basename(path)
-        encrypted = encrypt_data(content)
-        chunks = chunk_bytes(encrypted)
-        root_hash = merkle_root(chunks)
+        encrypted = encrypt_data(data)
+        file_hash = compute_hash(data)
+
+        update_status(f"[INFO] Uploading {filename}")
+        update_status(f"[INFO] File size: {len(data)} bytes")
+        update_status(f"[INFO] Hash: {file_hash}")
 
         with socket.socket() as client:
             client.connect((HOST, PORT))
-            client.sendall(b"UPLOAD".ljust(10, b" "))
+            client.sendall(b"UPLOAD".ljust(16))
 
-            # filename
-            name_b = filename.encode("utf-8")
-            client.sendall(len(name_b).to_bytes(4, "big"))
-            client.sendall(name_b)
+            client.sendall(len(filename.encode()).to_bytes(4, "big"))
+            client.sendall(filename.encode())
 
-            # encrypted data
             client.sendall(len(encrypted).to_bytes(8, "big"))
             client.sendall(encrypted)
 
-            # merkle root (64 hex chars)
-            client.sendall(root_hash.encode("ascii"))
+            client.sendall(file_hash.encode())
 
-            resp = client.recv(32).decode("ascii", errors="ignore").strip()
+            response = client.recv(16).decode().strip()
 
-            if resp == "VERIFIED":
-                messagebox.showinfo("Success", "File uploaded and integrity verified!")
-            elif resp == "HASH_MISMATCH":
-                messagebox.showerror("Error", "Integrity check failed (hash mismatch)")
-            elif resp == "DECRYPT_FAILED":
-                messagebox.showerror("Error", "Server could not decrypt file")
-            else:
-                messagebox.showerror("Error", f"Server responded: {resp}")
+        if response == "OK":
+            update_status("[SUCCESS] File uploaded successfully")
+        elif response == "TOOBIG":
+            update_status("[ERROR] File too large for server")
+        else:
+            update_status(f"[ERROR] Upload failed: {response}")
 
     except Exception as e:
         messagebox.showerror("Error", str(e))
+        update_status(f"[ERROR] {e}")
 
 
 def download_file():
     filename = entry.get().strip()
     if not filename:
-        messagebox.showwarning("Input required", "Please enter a filename")
+        messagebox.showwarning("Input Required", "Enter filename")
         return
 
     try:
+        update_status(f"[INFO] Downloading {filename}")
+
         with socket.socket() as client:
             client.connect((HOST, PORT))
-            client.sendall(b"DOWNLOAD".ljust(10, b" "))
+            client.sendall(b"DOWNLOAD".ljust(16))
 
+            client.sendall(len(filename.encode()).to_bytes(4, "big"))
+            client.sendall(filename.encode())
 
-            name_b = filename.encode("utf-8")
-            client.sendall(len(name_b).to_bytes(4, "big"))
-            client.sendall(name_b)
-
-            status = client.recv(16).decode("ascii", errors="ignore").strip()
-
-            if status != "FOUND":
-                messagebox.showerror("Error", "File not found on server")
+            status = client.recv(16).decode().strip()
+            if status == "NOTFOUND":
+                update_status("[ERROR] File not found on server")
+                return
+            elif status != "FOUND":
+                update_status(f"[ERROR] Unexpected status: {status}")
                 return
 
-            enc_len = int.from_bytes(recvall(client, 8), "big")
-            encrypted = recvall(client, enc_len)
+            enc_len = int.from_bytes(client.recv(8), "big")
+            encrypted = b""
+            while len(encrypted) < enc_len:
+                packet = client.recv(min(4096, enc_len - len(encrypted)))
+                if not packet:
+                    raise ConnectionError("Connection closed during download")
+                encrypted += packet
 
-            root_hash = recvall(client, 64).decode("ascii")
+            server_hash = client.recv(64).decode()
 
-        content = decrypt_data(encrypted)
-        chunks = chunk_bytes(encrypted)
-        computed = merkle_root(chunks)
-        
-        if computed != root_hash:
-            messagebox.showerror("Error", "Integrity check failed after download")
+        data = decrypt_data(encrypted)
+        local_hash = compute_hash(data)
+
+        if local_hash != server_hash:
+            update_status("[ERROR] Integrity check failed")
             return
 
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        out_path = os.path.join(DOWNLOAD_DIR, filename)
+        os.makedirs("Downloaded", exist_ok=True)
+        save_path = f"Downloaded/{filename}"
+        with open(save_path, "wb") as f:
+            f.write(data)
 
-        with open(out_path, "wb") as f:
-            f.write(content)
-
-        messagebox.showinfo("Success", f"File downloaded and verified!\nSaved to: {out_path}")
+        update_status(f"[SUCCESS] File downloaded & verified to {save_path}")
+        update_status(f"[INFO] Hash: {local_hash}")
 
     except Exception as e:
         messagebox.showerror("Error", str(e))
+        update_status(f"[ERROR] {e}")
+
+def refresh_downloaded_files():
+    listbox.delete(0, tk.END)
+    if not os.path.exists("Downloaded"):
+        return
+    for f in os.listdir("Downloaded"):
+        listbox.insert(tk.END, f)
+
+def list_server_files():
+    listbox.delete(0, tk.END)
+
+    with socket.socket() as client:
+        client.connect((HOST, PORT))
+        client.sendall(b"LIST".ljust(16))
+
+        size = int.from_bytes(client.recv(4), "big")
+        data = client.recv(size).decode()
+
+    for line in data.splitlines():
+        listbox.insert(tk.END, line)
 
 
-# ────────────────────────────────────────────────
-# GUI
-# ────────────────────────────────────────────────
+# ───────── GUI ─────────
 
 root = tk.Tk()
-root.title("Secure File Transfer — Merkle Tree")
-root.geometry("380x220")
+root.title("Secure File Transfer Client")
+root.geometry("520x420")
 
-tk.Label(root, text="Secure File Transfer (Merkle + Fernet)", font=("Arial", 13, "bold")).pack(pady=12)
+tk.Label(root, text="Secure File Transfer System",
+         font=("Arial", 16, "bold")).pack(pady=10)
 
-tk.Button(root, text="Upload File", font=("Arial", 11), width=20, command=upload_file).pack(pady=8)
+tk.Button(root, text="Upload File", width=25,
+          command=upload_file).pack(pady=5)
 
-tk.Label(root, text="Download filename:", font=("Arial", 10)).pack()
-entry = tk.Entry(root, width=35, font=("Arial", 11))
-entry.pack(pady=6)
+tk.Label(root, text="Download filename:").pack()
+entry = tk.Entry(root, width=40)
+entry.pack(pady=5)
 
-tk.Button(root, text="Download File", font=("Arial", 11), width=20, command=download_file).pack(pady=12)
+tk.Button(root, text="Download File", width=25,
+          command=download_file).pack(pady=5)
+
+tk.Label(root, text="Status Log", font=("Arial", 12, "bold")).pack(pady=10)
+
+status_box = tk.Text(root, height=10, width=60)
+status_box.pack(padx=10)
+
+tk.Label(root, text="Downloaded Files").pack(pady=5)
+
+listbox = tk.Listbox(root, width=40, height=6)
+listbox.pack()
+
+tk.Button(root, text="Downloaded List",
+          command=refresh_downloaded_files).pack(pady=5)
+
+tk.Button(root, text="List Server Files",
+          command=list_server_files).pack(pady=5)
+
 
 root.mainloop()
