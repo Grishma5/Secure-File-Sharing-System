@@ -27,3 +27,9 @@ Thumbs.db
 
 # SQLite database (if used)
 *.db
+
+# Client downloads
+code/client_side/Downloaded/
+
+# Server storage (encrypted files & hashes)
+code/server_side/storage/
