@@ -33,3 +33,9 @@ code/client_side/Downloaded/
 
 # Server storage (encrypted files & hashes)
 code/server_side/storage/
+
+# Certificates and keys - never commit
+*.pem
+*.key
+*.crt
+*.p12
